@@ -60,6 +60,10 @@
         <spotless.version>2.43.0</spotless.version>
         <checkstyle.plugin.version>3.5.0</checkstyle.plugin.version>
         <checkstyle.version>10.18.2</checkstyle.version>
+
+        <!-- @Tag("load") tests are skipped by default; override empty to run them:
+             mvn test -Dsurefire.excludedGroups= -Dtest=*LoadTest -->
+        <surefire.excludedGroups>load</surefire.excludedGroups>
     </properties>
 
     <dependencyManagement>
@@ -222,6 +226,16 @@
                             <version>${lombok.version}</version>
                         </path>
                     </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <!-- Skip @Tag("load") tests in the normal build; run the throughput
+                 harness explicitly with `mvn test -DexcludedGroups= -Dtest=*LoadTest`. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <excludedGroups>${surefire.excludedGroups}</excludedGroups>
                 </configuration>
             </plugin>
 
