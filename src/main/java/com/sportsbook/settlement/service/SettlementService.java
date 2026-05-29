@@ -106,6 +106,23 @@ public class SettlementService {
     tx.executeWithoutResult(status -> finalizeVoided(prepared, eventId, reason));
   }
 
+  /**
+   * Manually voids a bet (admin action): refund the full stake and publish BetVoided with reason
+   * ADMIN_VOID, keyed on the bet's first event for partition ordering. Returns false if the bet is
+   * absent or not PENDING (already terminal), letting the controller answer 409.
+   */
+  public boolean voidByAdmin(UUID betId) {
+    VoidPrepared prepared = tx.execute(status -> prepareVoid(betId));
+    if (prepared == null) {
+      return false;
+    }
+    wallet.credit(
+        "void:refund:" + betId, prepared.userId(), prepared.committed(), CreditSource.USER_LOCKED);
+    tx.executeWithoutResult(
+        status -> finalizeVoided(prepared, prepared.eventId(), VoidReason.ADMIN_VOID));
+    return true;
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Phase 1: prepare under a row lock.
   // ---------------------------------------------------------------------------------------------
@@ -141,9 +158,10 @@ public class SettlementService {
     if (bet == null || !bet.isPending()) {
       return null;
     }
+    UUID firstEventId = bet.selections().get(0).eventId();
     Money committed =
         bet.stake().multiply(resolver.lineCount(bet.betSlipType(), bet.selections().size()));
-    return new VoidPrepared(betId, bet.userId(), committed);
+    return new VoidPrepared(betId, bet.userId(), firstEventId, committed);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -212,5 +230,5 @@ public class SettlementService {
   private record Prepared(
       UUID betId, UUID userId, UUID eventId, Money committed, SettlementOutcome outcome) {}
 
-  private record VoidPrepared(UUID betId, UUID userId, Money committed) {}
+  private record VoidPrepared(UUID betId, UUID userId, UUID eventId, Money committed) {}
 }

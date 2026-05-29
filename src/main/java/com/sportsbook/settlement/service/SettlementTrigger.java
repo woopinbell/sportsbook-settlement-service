@@ -6,11 +6,14 @@ import com.sportsbook.settlement.domain.MatchResultRecord;
 import com.sportsbook.settlement.persistence.BetRepository;
 import com.sportsbook.settlement.persistence.MatchResultRepository;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
@@ -33,20 +36,39 @@ public class SettlementTrigger {
   private final MatchResultRepository matchResults;
   private final SettlementService settlement;
   private final Clock clock;
+  private final Duration correctionWindow;
 
   public SettlementTrigger(
       BetRepository bets,
       MatchResultRepository matchResults,
       SettlementService settlement,
-      Clock clock) {
+      Clock clock,
+      @Value("${settlement.late-settlement.correction-window:24h}") Duration correctionWindow) {
     this.bets = bets;
     this.matchResults = matchResults;
     this.settlement = settlement;
     this.clock = clock;
+    this.correctionWindow = correctionWindow;
   }
 
-  /** Materializes the result then settles every PENDING bet on the event. */
+  /**
+   * Materializes the result then settles every PENDING bet on the event. A <em>correction</em> (a
+   * result for an event already settled) is auto-applied only within the late-settlement window
+   * (ADR-0012, default 24h); a later correction is ignored on this path and needs an admin replay.
+   * The first result for an event is always accepted.
+   */
   public void onMatchResult(UUID eventId, EventResolution resolution, Instant settledAt) {
+    Optional<MatchResultRecord> existing = matchResults.findById(eventId);
+    if (existing.isPresent()
+        && Duration.between(existing.get().settledAt(), clock.instant()).compareTo(correctionWindow)
+            > 0) {
+      log.warn(
+          "Ignoring late correction for event {} (> {} after original settle); admin replay required"
+              + " (ADR-0012)",
+          eventId,
+          correctionWindow);
+      return;
+    }
     matchResults.save(
         MatchResultRecord.of(
             eventId,
