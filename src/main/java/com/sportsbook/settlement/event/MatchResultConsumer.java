@@ -3,6 +3,7 @@ package com.sportsbook.settlement.event;
 import com.sportsbook.protocol.domain.SettlementResult;
 import com.sportsbook.protocol.event.MatchFinalStatus;
 import com.sportsbook.protocol.event.MatchResult;
+import com.sportsbook.settlement.domain.MatchOutcomeMode;
 import com.sportsbook.settlement.service.EventResolution;
 import com.sportsbook.settlement.service.SettlementTrigger;
 import java.util.HashMap;
@@ -41,16 +42,16 @@ public class MatchResultConsumer {
     MatchResult event = AvroCodec.decode(payload, MatchResult.class);
     UUID eventId = UUID.fromString(event.getEventId().toString());
     EventResolution resolution = new EventResolution(mode(event.getFinalStatus()), outcomes(event));
-    trigger.onMatchResult(eventId, resolution);
+    trigger.onMatchResult(eventId, resolution, event.getSettledAt());
     ack.acknowledge();
     log.debug("Consumed match.result event={} status={}", eventId, event.getFinalStatus());
   }
 
-  private static EventResolution.Mode mode(MatchFinalStatus status) {
+  private static MatchOutcomeMode mode(MatchFinalStatus status) {
     return switch (status) {
-      case COMPLETED -> EventResolution.Mode.COMPLETED;
-      case ABANDONED -> EventResolution.Mode.ABANDONED;
-      case VOIDED -> EventResolution.Mode.VOIDED;
+      case COMPLETED -> MatchOutcomeMode.COMPLETED;
+      case ABANDONED -> MatchOutcomeMode.ABANDONED;
+      case VOIDED -> MatchOutcomeMode.VOIDED;
     };
   }
 

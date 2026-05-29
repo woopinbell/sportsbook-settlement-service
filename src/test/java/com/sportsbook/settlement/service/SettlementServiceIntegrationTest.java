@@ -19,6 +19,7 @@ import com.sportsbook.protocol.event.VoidReason;
 import com.sportsbook.protocol.value.Money;
 import com.sportsbook.settlement.domain.Bet;
 import com.sportsbook.settlement.domain.BetSelection;
+import com.sportsbook.settlement.domain.MatchOutcomeMode;
 import com.sportsbook.settlement.domain.SettlementStatus;
 import com.sportsbook.settlement.domain.SlipKind;
 import com.sportsbook.settlement.outbox.AvroSerializer;
@@ -30,6 +31,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -236,8 +241,44 @@ class SettlementServiceIntegrationTest {
     assertThat(onlySettled().getPayout().getAmount()).isEqualTo(30_000L);
   }
 
+  @Test
+  @DisplayName("concurrent settles of the same bet settle it exactly once (no double payout)")
+  void concurrentSettleSettlesOnce() throws Exception {
+    UUID betId = UUID.randomUUID();
+    UUID eventId = UUID.randomUUID();
+    UUID selectionId = UUID.randomUUID();
+    saveSingle(betId, UUID.randomUUID(), eventId, selectionId, "2.0000", Money.krw(10_000));
+    EventResolution resolution = completed(Map.of(selectionId, SettlementResult.WON));
+
+    int threads = 16;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    CountDownLatch start = new CountDownLatch(1);
+    try {
+      for (int i = 0; i < threads; i++) {
+        pool.submit(
+            () -> {
+              start.await();
+              settlement.settleOnEvent(betId, eventId, resolution);
+              return null;
+            });
+      }
+      start.countDown(); // release all at once to maximize the race
+      pool.shutdown();
+      assertThat(pool.awaitTermination(20, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      pool.shutdownNow();
+    }
+
+    // Exactly one settlement happened: one terminal transition, one outbox event. (Wallet credits
+    // all carry the same betId-derived keys, so the real wallet dedups them to a single payout.)
+    Bet settled = bets.findById(betId).orElseThrow();
+    assertThat(settled.status()).isEqualTo(SettlementStatus.SETTLED);
+    assertThat(settled.payout()).isEqualTo(Money.krw(20_000));
+    assertThat(outbox.count()).isEqualTo(1L);
+  }
+
   private static EventResolution completed(Map<UUID, SettlementResult> outcomes) {
-    return new EventResolution(EventResolution.Mode.COMPLETED, outcomes);
+    return new EventResolution(MatchOutcomeMode.COMPLETED, outcomes);
   }
 
   private void saveSingle(
