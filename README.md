@@ -38,8 +38,14 @@
 > (`cd ../shared-protocol && mvn install`).
 >
 > **Performance.** Target: settle 10 000 bets in under 10 s with zero double
-> payouts (see [`load-test/results/BEST.md`](load-test/results/BEST.md) once
-> measured).
+> payouts. Dev-host baseline (all components co-located, 32 threads): the settle
+> engine alone runs **~915 bets/s** (10k LOST in 10.9 s — essentially the target
+> on a single un-pooled PostgreSQL); the full payout path drops to **~589 bets/s**
+> (10k WON in 17.0 s) because each win makes two synchronous wallet credits. Every
+> run settles each bet exactly once (`outbox.count() == N`) — the no-double-payout
+> invariant at scale. Production scales the payout case past target on three axes
+> the harness can't reproduce locally: Kafka partitions, multiple instances, and a
+> pooled wallet. See [`load-test/results/BEST.md`](load-test/results/BEST.md).
 >
 > **Limitations (V1).** No half-won / half-lost (Asian handicap is out of scope,
 > ADR-0012) — System slips still settle each K-subset, but each selection is a
