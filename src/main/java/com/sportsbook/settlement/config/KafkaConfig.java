@@ -1,16 +1,22 @@
 package com.sportsbook.settlement.config;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.HashMap;
 import java.util.Map;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.util.backoff.FixedBackOff;
 
 /**
  * Producer factory for the outbox publisher. The wire shape is {@code (String key, byte[] value)}
@@ -22,14 +28,17 @@ import org.springframework.kafka.core.ProducerFactory;
  * ordering preserved (partition key = eventId, ADR-0006).
  *
  * <p>The consumer side uses Spring Boot's auto-configured {@code kafkaListenerContainerFactory}
- * (byte[] value deserializer + manual ack from application.yml); a custom DefaultErrorHandler for
- * the DLQ is layered on in the failure-handling step.
+ * (byte[] value deserializer + manual ack from application.yml); the {@link DefaultErrorHandler}
+ * bean below is auto-applied to it for retry + DLQ.
  */
 @Configuration
 public class KafkaConfig {
 
+  private static final Logger log = LoggerFactory.getLogger(KafkaConfig.class);
+
   // Confluent-recommended ceiling with enable.idempotence=true.
   private static final int MAX_IN_FLIGHT_REQUESTS = 5;
+  static final String DLQ_METRIC = "settlement.dlq";
 
   @Value("${spring.kafka.bootstrap-servers}")
   private String bootstrapServers;
@@ -51,5 +60,36 @@ public class KafkaConfig {
   public KafkaTemplate<String, byte[]> settlementKafkaTemplate(
       ProducerFactory<String, byte[]> settlementProducerFactory) {
     return new KafkaTemplate<>(settlementProducerFactory);
+  }
+
+  /**
+   * Retry + dead-letter handling for all settlement consumers (ADR-0006). A failed record is
+   * retried with a fixed backoff up to {@code settlement.retry.max-attempts} total tries, then
+   * republished to {@code <topic>.DLT} (same key/partition) via the byte[] template and counted on
+   * the {@value #DLQ_METRIC} meter for ops alerting. Parse failures (bad UUID / unknown result in
+   * resultDetail) are poison pills — non-retryable, so they go straight to the DLT. Spring Boot
+   * wires this single {@link DefaultErrorHandler} bean into the auto-configured listener container
+   * factory.
+   */
+  @Bean
+  public DefaultErrorHandler kafkaErrorHandler(
+      KafkaTemplate<String, byte[]> settlementKafkaTemplate,
+      MeterRegistry meterRegistry,
+      @Value("${settlement.retry.max-attempts:3}") int maxAttempts,
+      @Value("${settlement.retry.backoff-ms:500}") long backoffMs) {
+    DeadLetterPublishingRecoverer dlq = new DeadLetterPublishingRecoverer(settlementKafkaTemplate);
+    DefaultErrorHandler handler =
+        new DefaultErrorHandler(
+            (record, exception) -> {
+              meterRegistry.counter(DLQ_METRIC, "topic", record.topic()).increment();
+              log.error(
+                  "Routing record from {} to DLT after retries: {}",
+                  record.topic(),
+                  exception.getMessage());
+              dlq.accept(record, exception);
+            },
+            new FixedBackOff(backoffMs, (long) maxAttempts - 1));
+    handler.addNotRetryableExceptions(IllegalArgumentException.class);
+    return handler;
   }
 }
