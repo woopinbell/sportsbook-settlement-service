@@ -1,0 +1,131 @@
+spring:
+  application:
+    name: settlement-service
+
+  datasource:
+    url: ${SETTLEMENT_DB_URL:jdbc:postgresql://localhost:5432/settlement}
+    username: ${SETTLEMENT_DB_USER:settlement}
+    password: ${SETTLEMENT_DB_PASSWORD:settlement}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      pool-name: settlement-hikari
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+        format_sql: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+  kafka:
+    bootstrap-servers: ${SETTLEMENT_KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      # Per-listener group ids are set on each @KafkaListener; this default is a
+      # fallback. enable-auto-commit=false + manual_immediate ack so the offset
+      # only advances after the read-model / settlement write succeeds.
+      group-id: settlement-service
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    producer:
+      client-id: settlement-service
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+    listener:
+      ack-mode: manual_immediate
+
+server:
+  port: ${SETTLEMENT_HTTP_PORT:8084}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when_authorized
+  metrics:
+    tags:
+      service: settlement-service
+
+logging:
+  level:
+    root: INFO
+    com.sportsbook.settlement: INFO
+    org.hibernate.SQL: WARN
+
+# ----------------------------------------------------------------------
+# Settlement configuration. Kafka topic names are kept in one place so
+# producers and consumers don't drift across repos.
+#
+# NOTE (cross-repo): betting-service publishes BetPlacedRequested to
+# "bet.placed.v1" (BetEventFactory.TOPIC), while risk-service currently
+# consumes "bet.placed". settlement consumes betting's actual topic.
+# odds-feed-service publishes "match.result" and "event.lifecycle".
+# ----------------------------------------------------------------------
+settlement:
+  topics:
+    bet-placed: bet.placed.v1
+    match-result: match.result
+    event-lifecycle: event.lifecycle
+    bet-settled: bet.settled
+    bet-voided: bet.voided
+
+  # Synchronous wallet credit (payout / refund), ADR-0006. Settlement is not as
+  # latency-critical as placement, so the read timeout is looser than betting's.
+  wallet:
+    base-url: ${WALLET_BASE_URL:http://localhost:8081}
+    connect-timeout: 200ms
+    read-timeout: 1s
+
+  # Transactional outbox drain to Kafka (ADR-0006, sender side).
+  outbox:
+    poll-interval-ms: 1000
+
+  # Retry + DLQ on settlement failure (ADR-0006): 3 attempts with backoff, then
+  # route to <topic>.DLT and raise an ops alert metric.
+  retry:
+    max-attempts: 3
+    backoff-ms: 500
+
+  # Late settlement (ADR-0012): result corrections within this window are
+  # auto-applied; afterwards only admin-api replay may re-settle.
+  late-settlement:
+    correction-window: 24h
+
+# Resilience4j (ADR-0006). Only DependencyUnavailableException (the fail-closed
+# signal the wallet client raises on timeout / 5xx / connection error) is
+# recorded, so business outcomes never trip a breaker.
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 5s
+        permitted-number-of-calls-in-half-open-state: 5
+        record-exceptions:
+          - com.sportsbook.settlement.error.DependencyUnavailableException
+    instances:
+      walletClient:
+        base-config: default

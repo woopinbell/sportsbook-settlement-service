@@ -1,0 +1,21 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+    clean-disabled: false
+  # datasource / kafka are filled by @DynamicPropertySource from Testcontainers
+  # in each integration test class — leaving them unset here so a forgotten
+  # override surfaces as a NoSuchBeanDefinitionException instead of silently
+  # falling back to a stale local PostgreSQL.
+
+settlement:
+  # Park the @Scheduled outbox drain (24h) so each test drives the publisher
+  # explicitly rather than racing the fixed-delay tick.
+  outbox:
+    poll-interval-ms: 86400000
+
+logging:
+  level:
+    com.sportsbook.settlement: DEBUG
