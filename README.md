@@ -145,8 +145,29 @@ selection별 승패는 `MatchResult.resultDetail` 계약으로 받는다.
 
 ## 성능
 
-목표: **1만 베팅 정산 < 10초, 중복 payout 0건**. 측정·분석 전문은
-[`load-test/results/BEST.md`](load-test/results/BEST.md) (측정 후 박제).
+목표: **1만 베팅 정산 < 10초, 중복 payout 0건**. 정산은 이벤트 기반이라 k6 HTTP가
+아닌 JVM 처리량 하니스([`SettlementThroughputLoadTest`](src/test/java/com/sportsbook/settlement/load/SettlementThroughputLoadTest.java))로
+측정한다 — 1만 PENDING 베팅을 seed하고 병렬 정산하며 wall-clock 측정.
+
+**dev-host baseline** (Docker Desktop, settlement JVM·PostgreSQL 16·WireMock
+wallet이 한 머신 CPU 공유, 32 정산 스레드):
+
+| 시나리오 | 베팅 | 소요 | 처리량 | 정합성 | 목표 |
+|---|---|---|---|---|---|
+| LOST 배치 (정산 엔진 단독, wallet I/O 없음) | 10,000 | 10.9s | **915 bets/s** | 1만건 정확히 1회 정산 | 1만 < 10s |
+| WON 배치 (full payout, 베팅당 wallet credit 2회) | 10,000 | 17.0s | **589 bets/s** | 1만건 정확히 1회 정산 | 1만 < 10s |
+
+정산 엔진 자체(resolve → 상태 전이 → outbox)는 단일 비풀링 PostgreSQL에서 ~915
+bets/s로 **목표치에 근접**하다. WON은 베팅당 **동기 wallet HTTP 2회**(locked stake
+반환 + house 이익 지급)가 지배적이라 589 bets/s로 떨어진다 — co-located WireMock
+왕복 비용. dev-host에서 full-payout 1만<10s 미달은 betting의 p99 미달과 같은 이유
+(모든 의존성이 한 CPU 경쟁 + wallet은 실제 왕복)이며, production은 **Kafka
+partition 병렬 consume + 다중 인스턴스 + 풀링된 전용 wallet**으로 목표를 넘긴다.
+
+**중복 payout 0건**(핵심 불변식): 모든 run이 `outbox.count() == N`을 검증하고(베팅당
+`BetSettled` 정확히 1건), 동시성 증명(16스레드 동일 betId → 1회 정산) + betId 기반
+wallet 멱등 키로 보장. 전문은
+[`load-test/results/BEST.md`](load-test/results/BEST.md).
 
 ## 문서
 
