@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -201,5 +202,62 @@ public class Bet {
   /** Selections in submission order. Unmodifiable — mutate through aggregate methods. */
   public List<BetSelection> selections() {
     return Collections.unmodifiableList(selections);
+  }
+
+  /**
+   * Stamps the outcome of every still-unresolved selection on {@code eventId} from {@code outcomes}
+   * (selectionId → result, read from MatchResult.resultDetail). Returns true if anything changed.
+   * Selections whose id is absent from the map are left unresolved (a data gap that keeps the bet
+   * PENDING until corrected).
+   */
+  public boolean applyEventOutcomes(
+      UUID eventId, Map<UUID, SettlementResult> outcomes, Instant now) {
+    boolean changed = false;
+    for (BetSelection selection : selections) {
+      if (selection.eventId().equals(eventId) && selection.outcome() == null) {
+        SettlementResult outcome = outcomes.get(selection.selectionId());
+        if (outcome != null) {
+          selection.recordOutcome(outcome);
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      this.updatedAt = now;
+    }
+    return changed;
+  }
+
+  /** True once every selection has an outcome — i.e. all the bet's events have resolved. */
+  public boolean allSelectionsResolved() {
+    return selections.stream().allMatch(selection -> selection.outcome() != null);
+  }
+
+  /** Terminal transition to SETTLED with the resolved result + credited payout. PENDING-only. */
+  public void recordSettled(SettlementResult result, Money payout, Instant now) {
+    ensurePending();
+    this.status = SettlementStatus.SETTLED;
+    this.result = Objects.requireNonNull(result, "result");
+    this.payoutAmount = payout.amount();
+    this.payoutCurrency = payout.currency();
+    this.settledAt = now;
+    this.updatedAt = now;
+  }
+
+  /** Terminal transition to VOIDED (cancelled / postponed event) with the full stake refund. */
+  public void recordVoided(Money refund, Instant now) {
+    ensurePending();
+    this.status = SettlementStatus.VOIDED;
+    this.result = SettlementResult.VOID;
+    this.payoutAmount = refund.amount();
+    this.payoutCurrency = refund.currency();
+    this.settledAt = now;
+    this.updatedAt = now;
+  }
+
+  private void ensurePending() {
+    if (status != SettlementStatus.PENDING) {
+      throw new IllegalStateException("Bet " + betId + " is already " + status);
+    }
   }
 }

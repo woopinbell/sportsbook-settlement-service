@@ -86,6 +86,11 @@ public class BetSelection {
     this.legIndex = legIndex;
   }
 
+  // Package-private: outcome is stamped only through Bet.applyEventOutcomes, write-once.
+  void recordOutcome(SettlementResult result) {
+    this.outcome = Objects.requireNonNull(result, "result");
+  }
+
   public UUID selectionRowId() {
     return selectionRowId;
   }

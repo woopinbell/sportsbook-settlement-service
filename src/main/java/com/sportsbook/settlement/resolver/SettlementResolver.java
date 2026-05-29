@@ -93,12 +93,37 @@ public class SettlementResolver {
     return allVoid ? SettlementResult.VOID : SettlementResult.PUSH;
   }
 
+  /**
+   * Number of lines (accumulators) the slip expands into — the multiplier on the unit stake that
+   * gives the total committed stake. Single/Multiple = 1; System = C(N, K). Symmetric with
+   * betting-service so the committed amount reconciles with the placement-time debit.
+   */
+  public int lineCount(BetSlipType type, int legCount) {
+    if (type instanceof BetSlipType.System system) {
+      return Math.toIntExact(binomial(legCount, system.minWins()));
+    }
+    return 1;
+  }
+
   /** Lines the slip expands into: Single/Multiple = one line over all legs, System = C(N, K). */
   private static List<List<Integer>> lines(BetSlipType type, int legCount) {
     if (type instanceof BetSlipType.System system) {
       return combinations(legCount, system.minWins());
     }
     return List.of(IntStream.range(0, legCount).boxed().toList());
+  }
+
+  /** C(n, k) via the multiplicative formula; exact for the L4-bounded range (n &le; 15). */
+  static long binomial(int n, int k) {
+    if (k < 0 || k > n) {
+      return 0;
+    }
+    int kk = Math.min(k, n - k);
+    long result = 1;
+    for (int i = 0; i < kk; i++) {
+      result = result * (n - i) / (i + 1);
+    }
+    return result;
   }
 
   /** All {@code k}-subsets of {@code [0, n)}, ascending, lexicographic. */
